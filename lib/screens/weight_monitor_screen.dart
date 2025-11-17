@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/connection_status.dart';
 import '../providers/scale_providers.dart';
+import '../models/weight_reading.dart';
 
 /// Main screen for monitoring USB scale weight readings with automatic detection
 class WeightMonitorScreen extends ConsumerWidget {
@@ -9,6 +10,8 @@ class WeightMonitorScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Ensure the scale controller initializes and listens for USB events.
+    ref.watch(scaleControllerProvider);
     final connectionStatus = ref.watch(connectionStatusProvider);
     final weightReading = ref.watch(weightReadingProvider);
     final errorMessage = ref.watch(errorMessageProvider);
@@ -59,7 +62,7 @@ class WeightMonitorScreen extends ConsumerWidget {
   Widget _buildMainDisplay(
     BuildContext context,
     ConnectionStatus status,
-    dynamic reading,
+    WeightReading? reading,
   ) {
     switch (status) {
       case ConnectionStatus.disconnected:
@@ -245,13 +248,14 @@ class _ErrorView extends StatelessWidget {
 class _WeightDisplay extends StatelessWidget {
   const _WeightDisplay({required this.reading});
 
-  final dynamic reading;
+  final WeightReading reading;
 
   @override
   Widget build(BuildContext context) {
-    final weightText = reading.value != null
-        ? reading.value!.toStringAsFixed(2)
-        : '--';
+    final rawText = reading.raw.trim();
+    final weightText = rawText.isNotEmpty
+        ? rawText
+        : (reading.value != null ? reading.value!.toString() : '--');
 
     return Card(
       elevation: 12,

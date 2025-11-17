@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- USB CDC devices -->
+    <usb-device class="2" subclass="2" protocol="1" />
+    
+    <!-- Vendor Specific devices (like your scale) -->
+    <usb-device class="255" />
+    
+    <!-- Specific device: Vendor ID 0x1a86, Product ID 0x7523 -->
+    <usb-device vendor-id="6790" product-id="29987" />
+</resources>

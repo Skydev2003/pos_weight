@@ -180,7 +180,10 @@ class ScaleController extends StateNotifier<AsyncValue<void>> {
       if (_isDisposed) return;
 
       // Update state on success
-      ref.read(weightReadingProvider.notifier).state = reading;
+      final previous = ref.read(weightReadingProvider);
+      if (_shouldUpdateReading(previous, reading)) {
+        ref.read(weightReadingProvider.notifier).state = reading;
+      }
       ref.read(errorMessageProvider.notifier).state = null;
 
       // Ensure status is connected
@@ -210,6 +213,20 @@ class ScaleController extends StateNotifier<AsyncValue<void>> {
     _pollingTimer?.cancel();
     _usbEventSubscription?.cancel();
     super.dispose();
+  }
+
+  bool _shouldUpdateReading(WeightReading? previous, WeightReading next) {
+    if (previous == null) return true;
+
+    final prevRaw = previous.raw.trim();
+    final nextRaw = next.raw.trim();
+    if (prevRaw != nextRaw) return true;
+
+    final prevValue = previous.value;
+    final nextValue = next.value;
+    if (prevValue != nextValue) return true;
+
+    return false;
   }
 }
 

@@ -5,24 +5,24 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
-import android.hardware.usb.UsbEndpoint
-import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
-import io.flutter.embedding.android.FlutterActivity
+import com.hoho.android.usbserial.driver.UsbSerialDriver
+import com.hoho.android.usbserial.driver.UsbSerialPort
+import com.hoho.android.usbserial.driver.UsbSerialProber
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.embedding.android.FlutterActivity
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
-import kotlin.math.max
+import kotlin.math.abs
 import kotlin.text.Charsets
 
 class MainActivity : FlutterActivity() {
@@ -32,6 +32,22 @@ class MainActivity : FlutterActivity() {
 
     private var methodChannel: MethodChannel? = null
     private var receiverRegistered = false
+
+    private var usbManager: UsbManager? = null
+    private var serialDriver: UsbSerialDriver? = null
+    private var serialPort: UsbSerialPort? = null
+    private var serialConnection: UsbDeviceConnection? = null
+
+    private val weightRegex = Regex("[-+]?\\d+(?:[.,]\\d+)?")
+
+    private val serialConfigs = listOf(
+        SerialConfig("2400 7E1", 2400, UsbSerialPort.DATABITS_7, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_EVEN),
+        SerialConfig("2400 8N1", 2400, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE),
+        SerialConfig("4800 7E1", 4800, UsbSerialPort.DATABITS_7, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_EVEN),
+        SerialConfig("4800 8N1", 4800, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE),
+        SerialConfig("9600 7E1", 9600, UsbSerialPort.DATABITS_7, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_EVEN),
+        SerialConfig("9600 8N1", 9600, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE),
+    )
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -54,6 +70,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         registerUsbPermissionReceiver()
     }
 
@@ -66,6 +83,7 @@ class MainActivity : FlutterActivity() {
             }
             receiverRegistered = false
         }
+        closeSerialPort()
         super.onDestroy()
     }
 
@@ -86,48 +104,310 @@ class MainActivity : FlutterActivity() {
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).also { channel ->
                 channel.setMethodCallHandler { call, result ->
                     when (call.method) {
+                        "autoConnect" -> handleAutoConnect(result)
                         "readWeight" -> handleReadWeight(call, result)
+                        "disconnect" -> handleDisconnect(result)
+                        "isConnected" -> handleIsConnected(result)
                         else -> result.notImplemented()
                     }
                 }
             }
     }
 
-    private fun handleReadWeight(call: MethodCall, result: MethodChannel.Result) {
-        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        val portHint = call.argument<String>("port")?.trim().orEmpty()
-        val baudRate = call.argument<Number>("baudRate")?.toInt() ?: 9600
-
-        val device = selectUsbDevice(usbManager, portHint)
-        if (device == null) {
-            result.error(
-                "device_not_found",
-                "ไม่พบอุปกรณ์ USB Serial ที่ตรงกับ '$portHint'",
-                null
-            )
+    private fun handleAutoConnect(result: MethodChannel.Result) {
+        val manager = usbManager
+        if (manager == null) {
+            result.success(false)
             return
         }
 
-        if (!usbManager.hasPermission(device)) {
-            requestUsbPermission(usbManager, device)
-            result.error(
-                "usb_permission",
-                "กรุณาอนุญาตการเข้าถึงอุปกรณ์ ${device.deviceName} แล้วลองใหม่",
-                null
-            )
+        val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(manager)
+        if (drivers.isEmpty()) {
+            Log.w(logTag, "No USB serial drivers found")
+            result.success(false)
+            return
+        }
+
+        val driver = selectDriver(drivers)
+        if (driver == null) {
+            Log.w(logTag, "No supported USB serial device detected")
+            result.success(false)
+            return
+        }
+
+        val device = driver.device
+        Log.d(logTag, "Selected device: ${device.deviceName}, VID=${device.vendorId}, PID=${device.productId}")
+
+        if (!manager.hasPermission(device)) {
+            Log.d(logTag, "Requesting permission for ${device.deviceName}")
+            requestUsbPermission(manager, device)
+            result.success(false)
             return
         }
 
         Thread {
-            val outcome = readFromUsbDevice(usbManager, device, baudRate)
+            val success = openSerialPort(driver)
+            runOnUiThread {
+                result.success(success)
+            }
+        }.start()
+    }
+
+    private fun handleReadWeight(@Suppress("UNUSED_PARAMETER") call: MethodCall, result: MethodChannel.Result) {
+        val port = serialPort
+        if (port == null) {
+            result.error("not_connected", "ยังไม่ได้เชื่อมต่ออุปกรณ์", null)
+            return
+        }
+
+        Thread {
+            val outcome = readFromSerialPort(port)
             runOnUiThread {
                 when (outcome) {
                     is SerialReadOutcome.Success -> result.success(outcome.payload)
-                    is SerialReadOutcome.Failure ->
-                        result.error(outcome.code, outcome.message, null)
+                    is SerialReadOutcome.Failure -> result.error(outcome.code, outcome.message, null)
                 }
             }
         }.start()
+    }
+
+    private fun handleDisconnect(result: MethodChannel.Result) {
+        closeSerialPort()
+        result.success(true)
+    }
+
+    private fun handleIsConnected(result: MethodChannel.Result) {
+        result.success(serialPort != null)
+    }
+
+    private var activeSerialConfig: SerialConfig? = null
+
+    private fun openSerialPort(driver: UsbSerialDriver): Boolean {
+        closeSerialPort()
+
+        return try {
+            val manager = usbManager ?: return false
+            val connection = manager.openDevice(driver.device)
+            if (connection == null) {
+                Log.e(logTag, "Unable to open USB device")
+                return false
+            }
+
+            val port = driver.ports.firstOrNull()
+            if (port == null) {
+                Log.e(logTag, "No serial ports exposed by device")
+                connection.close()
+                return false
+            }
+
+            port.open(connection)
+
+            if (!configureSerialParameters(port)) {
+                Log.e(logTag, "Unable to determine serial configuration")
+                port.close()
+                connection.close()
+                return false
+            }
+
+            serialDriver = driver
+            serialPort = port
+            serialConnection = connection
+            Log.d(logTag, "Serial port opened successfully")
+            true
+        } catch (ex: Exception) {
+            Log.e(logTag, "Failed to open serial port", ex)
+            closeSerialPort()
+            false
+        }
+    }
+
+    private fun readFromSerialPort(port: UsbSerialPort): SerialReadOutcome {
+        return try {
+            val buffer = ByteArray(512)
+            val chunk = ByteArray(64)
+            var totalRead = 0
+            val start = System.currentTimeMillis()
+            var lastReadAt = start
+
+            while (totalRead < buffer.size && System.currentTimeMillis() - start < 1000) {
+                val count = port.read(chunk, 150)
+                if (count > 0) {
+                    System.arraycopy(chunk, 0, buffer, totalRead, count)
+                    totalRead += count
+                    lastReadAt = System.currentTimeMillis()
+
+                    val hasTerminator = chunk.take(count).any { byte ->
+                        byte == 0x0A.toByte() || byte == 0x0D.toByte()
+                    }
+                    if (hasTerminator) break
+                } else {
+                    if (totalRead > 0 && System.currentTimeMillis() - lastReadAt > 120) {
+                        break
+                    }
+                }
+            }
+
+            if (totalRead <= 0) {
+                return SerialReadOutcome.Failure("no_data", "ไม่ได้รับข้อมูลจากเครื่องชั่ง")
+            }
+
+            val data = buffer.copyOfRange(0, totalRead)
+            val lines = data.toString(Charsets.US_ASCII)
+                .split("\r", "\n")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            val firstLine = lines.firstOrNull() ?: ""
+            val hexDump = data.joinToString(" ") { "%02X".format(it) }
+
+            Log.d(logTag, "Raw serial payload ($totalRead bytes): $lines | HEX: $hexDump")
+
+            val device = serialDriver?.device
+            val payload = hashMapOf<String, Any?>(
+                "port" to buildPortLabel(device),
+                "raw" to firstLine.ifEmpty { hexDump },
+                "rawHex" to hexDump,
+                "devicePath" to device?.deviceName,
+                "vendorId" to device?.vendorId,
+                "productId" to device?.productId,
+            )
+
+            val asciiLinesWithDigits = lines.filter { line ->
+                line.any { it.isDigit() }
+            }
+
+            var weightKg = asciiLinesWithDigits.firstNotNullOfOrNull { line ->
+                parseWeight(line)
+            }
+
+            if (weightKg == null && totalRead <= 4) {
+                val binaryWeight = parseBinaryWeight(data)
+                weightKg = binaryWeight?.valueKg
+                binaryWeight?.rawCounts?.let { payload["rawCounts"] = it }
+            }
+
+            if (weightKg != null) {
+                payload["value"] = weightKg
+                return SerialReadOutcome.Success(payload)
+            }
+
+            SerialReadOutcome.Failure(
+                "invalid_payload",
+                "แปลงค่าน้ำหนักไม่สำเร็จ: $hexDump",
+            )
+        } catch (ex: Exception) {
+            Log.e(logTag, "Failed to read serial data", ex)
+            SerialReadOutcome.Failure("read_error", ex.localizedMessage ?: "เกิดข้อผิดพลาด")
+        }
+    }
+
+    private fun configureSerialParameters(port: UsbSerialPort): Boolean {
+        serialConfigs.forEach { config ->
+            try {
+                port.setParameters(
+                    config.baudRate,
+                    config.dataBits,
+                    config.stopBits,
+                    config.parity,
+                )
+                port.dtr = true
+                port.rts = true
+
+                val sample = readAsciiSample(port)
+                if (sample != null && sample.any { it.isDigit() }) {
+                    activeSerialConfig = config
+                    Log.d(logTag, "Using serial config ${config.label}, sample='$sample'")
+                    return true
+                }
+            } catch (ex: Exception) {
+                Log.w(logTag, "Serial config ${config.label} failed", ex)
+            }
+        }
+        activeSerialConfig = null
+        return false
+    }
+
+    private fun readAsciiSample(port: UsbSerialPort): String? {
+        return try {
+            val buffer = ByteArray(128)
+            val bytes = port.read(buffer, 200)
+            if (bytes <= 0) return null
+            buffer.copyOf(bytes)
+                .filter { it in 32..126 || it == 0x0A.toByte() || it == 0x0D.toByte() }
+                .toByteArray()
+                .toString(Charsets.US_ASCII)
+                .trim()
+                .takeIf { it.isNotEmpty() }
+        } catch (ex: Exception) {
+            null
+        }
+    }
+
+    private fun parseWeight(raw: String): Double? {
+        val normalized = raw.lowercase(Locale.ROOT)
+        val match = weightRegex.find(normalized) ?: return null
+        val numeric = match.value.replace(",", ".").toDoubleOrNull() ?: return null
+
+        val isGram = normalized.contains(" g") && !normalized.contains("kg")
+        return if (isGram) numeric / 1000.0 else numeric
+    }
+
+    private fun parseBinaryWeight(data: ByteArray): BinaryWeight? {
+        if (data.size >= 2) {
+            val shortValue = ByteBuffer.wrap(data, 0, 2)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .short
+                .toInt()
+            val kilograms = shortValue / 1000.0
+            if (abs(kilograms) < 500) {
+                return BinaryWeight(kilograms, shortValue)
+            }
+        }
+
+        if (data.size >= 4) {
+            val floatValue = ByteBuffer.wrap(data, 0, 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .float
+            if (floatValue.isFinite() && abs(floatValue) < 500) {
+                return BinaryWeight(floatValue.toDouble())
+            }
+
+            val intValue = ByteBuffer.wrap(data, 0, 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .int
+            val kilograms = intValue / 1000.0
+            if (abs(kilograms) < 5000) {
+                return BinaryWeight(kilograms, intValue)
+            }
+        }
+
+        return null
+    }
+
+    private fun selectDriver(drivers: List<UsbSerialDriver>): UsbSerialDriver? {
+        if (drivers.isEmpty()) return null
+        return drivers.firstOrNull { driver ->
+            val device = driver.device
+            device.vendorId == 0x1A86 && device.productId == 0x7523
+        } ?: drivers.firstOrNull()
+    }
+
+    private fun buildPortLabel(device: UsbDevice?): String {
+        if (device == null) return "USB"
+        val id = "${device.vendorId}:${device.productId}"
+        return "${device.deviceName} ($id)"
+    }
+
+    private fun closeSerialPort() {
+        try {
+            serialPort?.close()
+        } catch (ex: Exception) {
+            Log.w(logTag, "Error closing serial port", ex)
+        } finally {
+            serialConnection?.close()
+            serialConnection = null
+            serialPort = null
+            serialDriver = null
+        }
     }
 
     private fun requestUsbPermission(usbManager: UsbManager, device: UsbDevice) {
@@ -141,219 +421,19 @@ class MainActivity : FlutterActivity() {
             PendingIntent.getBroadcast(this, 0, Intent(usbPermissionAction), flags)
         usbManager.requestPermission(device, pendingIntent)
     }
-
-    private fun selectUsbDevice(usbManager: UsbManager, hint: String): UsbDevice? {
-        val devices = usbManager.deviceList.values
-        if (devices.isEmpty()) {
-            return null
-        }
-        if (hint.isBlank()) {
-            return devices.first()
-        }
-        val normalized = hint.lowercase(Locale.US)
-        return devices.firstOrNull { matchesDevice(it, normalized) } ?: devices.first()
-    }
-
-    private fun matchesDevice(device: UsbDevice, hint: String): Boolean {
-        return tryMatch(device.deviceName, hint)
-                || tryMatch("${device.vendorId}:${device.productId}", hint)
-                || tryMatch(device.productName, hint)
-                || tryMatch(device.manufacturerName, hint)
-    }
-
-    private fun tryMatch(candidate: String?, hint: String): Boolean {
-        if (candidate.isNullOrBlank()) return false
-        return candidate.lowercase(Locale.US).contains(hint)
-    }
-
-    private fun readFromUsbDevice(
-        usbManager: UsbManager,
-        device: UsbDevice,
-        baudRate: Int,
-    ): SerialReadOutcome {
-        val connection = usbManager.openDevice(device)
-            ?: return SerialReadOutcome.Failure(
-                "connection_error",
-                "ไม่สามารถเชื่อมต่อกับ ${device.deviceName}"
-            )
-
-        val claimedInterfaces = mutableListOf<UsbInterface>()
-        return try {
-            val controlInterface = findInterfaceByClass(
-                device,
-                UsbConstants.USB_CLASS_COMM
-            )
-            val dataInterface = findDataInterface(device)
-                ?: return SerialReadOutcome.Failure("interface_error", "ไม่พบ data interface")
-
-            if (controlInterface != null) {
-                if (!connection.claimInterface(controlInterface, true)) {
-                    return SerialReadOutcome.Failure("claim_error", "ไม่สามารถ claim interface")
-                }
-                claimedInterfaces.add(controlInterface)
-            }
-
-            if (!claimedInterfaces.contains(dataInterface)) {
-                if (!connection.claimInterface(dataInterface, true)) {
-                    return SerialReadOutcome.Failure("claim_error", "ไม่สามารถ claim interface")
-                }
-                claimedInterfaces.add(dataInterface)
-            }
-
-            if (!configureSerialConnection(connection, baudRate)) {
-                return SerialReadOutcome.Failure("config_error", "ตั้งค่า serial ไม่สำเร็จ")
-            }
-
-            val inEndpoint = findInEndpoint(dataInterface)
-                ?: return SerialReadOutcome.Failure("endpoint_error", "ไม่พบ IN endpoint")
-
-            val packetSize = max(inEndpoint.maxPacketSize, 64)
-            val buffer = ByteArray(packetSize)
-            val bytesRead = connection.bulkTransfer(inEndpoint, buffer, buffer.size, 600)
-
-            if (bytesRead <= 0) {
-                return SerialReadOutcome.Failure("no_data", "ไม่ได้รับข้อมูลจากเครื่องชั่ง")
-            }
-
-            val raw = buffer.decodeToString(bytesRead)
-            val trimmed = raw.trim()
-            val numeric = extractNumericValue(trimmed)
-
-            val payload = hashMapOf<String, Any?>(
-                "port" to buildPortLabel(device),
-                "raw" to trimmed,
-                "devicePath" to device.deviceName,
-                "vendorId" to device.vendorId,
-                "productId" to device.productId,
-            )
-            if (numeric != null) {
-                payload["value"] = numeric
-            }
-
-            SerialReadOutcome.Success(payload)
-        } catch (ex: Exception) {
-            Log.e(logTag, "Failed to read from USB", ex)
-            SerialReadOutcome.Failure("read_error", ex.localizedMessage ?: "เกิดข้อผิดพลาด")
-        } finally {
-            claimedInterfaces.forEach { intf ->
-                try {
-                    connection.releaseInterface(intf)
-                } catch (_: Exception) {
-                }
-            }
-            connection.close()
-        }
-    }
-
-    private fun findInterfaceByClass(device: UsbDevice, klass: Int): UsbInterface? {
-        for (index in 0 until device.interfaceCount) {
-            val candidate = device.getInterface(index)
-            if (candidate.interfaceClass == klass) {
-                return candidate
-            }
-        }
-        return null
-    }
-
-    private fun findDataInterface(device: UsbDevice): UsbInterface? {
-        val prioritized = mutableListOf<UsbInterface>()
-        for (index in 0 until device.interfaceCount) {
-            prioritized.add(device.getInterface(index))
-        }
-        return prioritized.sortedBy {
-            when (it.interfaceClass) {
-                UsbConstants.USB_CLASS_CDC_DATA -> 0
-                UsbConstants.USB_CLASS_COMM -> 1
-                UsbConstants.USB_CLASS_VENDOR_SPEC -> 2
-                else -> 3
-            }
-        }.firstOrNull { it.endpointCount > 0 }
-    }
-
-    private fun findInEndpoint(usbInterface: UsbInterface): UsbEndpoint? {
-        for (index in 0 until usbInterface.endpointCount) {
-            val endpoint = usbInterface.getEndpoint(index)
-            if (endpoint.direction == UsbConstants.USB_DIR_IN) {
-                return endpoint
-            }
-        }
-        return null
-    }
-
-    private fun configureSerialConnection(
-        connection: UsbDeviceConnection,
-        baudRate: Int,
-    ): Boolean {
-        val lineCoding = ByteBuffer.allocate(7).order(ByteOrder.LITTLE_ENDIAN).apply {
-            putInt(baudRate)
-            put(UsbCdcStopBitsBits.ONE.value)
-            put(UsbCdcParity.NONE.value)
-            put(8.toByte())
-        }.array()
-
-        val setLineCoding = connection.controlTransfer(
-            0x21,
-            0x20,
-            0,
-            0,
-            lineCoding,
-            lineCoding.size,
-            1000
-        )
-        if (setLineCoding < 0) {
-            return false
-        }
-
-        val setControlLineState = connection.controlTransfer(
-            0x21,
-            0x22,
-            0x0003,
-            0,
-            null,
-            0,
-            1000
-        )
-        return setControlLineState >= 0
-    }
-
-    private fun ByteArray.decodeToString(length: Int): String {
-        return String(this, 0, length, Charsets.US_ASCII)
-    }
-
-    private fun extractNumericValue(payload: String): Double? {
-        if (payload.isEmpty()) return null
-        val builder = StringBuilder()
-        for (char in payload) {
-            when {
-                char.isDigit() || char == '.' || char == '-' || char == '+' -> builder.append(char)
-                char == ',' -> builder.append('.')
-                builder.isNotEmpty() -> break
-            }
-        }
-        return builder.toString().toDoubleOrNull()
-    }
-
-    private fun buildPortLabel(device: UsbDevice): String {
-        val id = "${device.vendorId}:${device.productId}"
-        return "${device.deviceName} ($id)"
-    }
 }
+
+private data class SerialConfig(
+    val label: String,
+    val baudRate: Int,
+    val dataBits: Int,
+    val stopBits: Int,
+    val parity: Int,
+)
 
 private sealed class SerialReadOutcome {
     data class Success(val payload: Map<String, Any?>) : SerialReadOutcome()
     data class Failure(val code: String, val message: String) : SerialReadOutcome()
 }
 
-private enum class UsbCdcStopBitsBits(val value: Byte) {
-    ONE(0),
-    ONE_POINT_FIVE(1),
-    TWO(2)
-}
-
-private enum class UsbCdcParity(val value: Byte) {
-    NONE(0),
-    ODD(1),
-    EVEN(2),
-    MARK(3),
-    SPACE(4)
-}
+private data class BinaryWeight(val valueKg: Double, val rawCounts: Int? = null)
