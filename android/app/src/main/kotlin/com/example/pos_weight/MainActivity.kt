@@ -27,7 +27,7 @@ import kotlin.text.Charsets
 
 class MainActivity : FlutterActivity() {
     private val channelName = "pos_weight/serial"
-    private val usbPermissionAction by lazy { "${BuildConfig.APPLICATION_ID}.USB_PERMISSION" }
+    private val usbPermissionAction: String by lazy { "$packageName.USB_PERMISSION" }
     private val logTag = "SerialScale"
 
     private var methodChannel: MethodChannel? = null
