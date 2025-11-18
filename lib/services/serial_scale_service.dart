@@ -2,8 +2,8 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import '../models/weight_reading.dart';
 
-/// Service for communicating with USB serial scale device
-/// Handles automatic device detection and communication
+/// บริการสำหรับสื่อสารกับเครื่องชั่งผ่าน USB Serial
+/// จัดการการตรวจจับและเชื่อมต่ออุปกรณ์อัตโนมัติ
 class SerialScaleService {
   static const MethodChannel _channel = MethodChannel('pos_weight/serial');
   static const EventChannel _usbEventChannel = EventChannel(
@@ -12,72 +12,114 @@ class SerialScaleService {
 
   Stream<String>? _usbEventStream;
 
-  /// Stream of USB connection events
-  /// Emits 'connected' when USB device is attached
-  /// Emits 'disconnected' when USB device is detached
+  // แคชสถานะการเชื่อมต่อเพื่อลดการเรียก platform channel
+  bool _isConnectedCache = false;
+  DateTime? _lastConnectionCheck;
+  static const _connectionCacheDuration = Duration(milliseconds: 500);
+
+  /// Stream สำหรับรับเหตุการณ์การเชื่อมต่อ USB
+  /// ส่งค่า 'connected' เมื่อเสียบ USB
+  /// ส่งค่า 'disconnected' เมื่อถอด USB
   Stream<String> get usbEvents {
-    _usbEventStream ??= _usbEventChannel.receiveBroadcastStream().map(
-      (event) => event.toString(),
-    );
+    _usbEventStream ??= _usbEventChannel.receiveBroadcastStream().map((event) {
+      // อัพเดทแคชเมื่อมีเหตุการณ์ USB
+      final eventStr = event.toString();
+      _isConnectedCache = eventStr == 'connected';
+      _lastConnectionCheck = DateTime.now();
+      return eventStr;
+    });
     return _usbEventStream!;
   }
 
-  /// Automatically detect and connect to USB scale device
-  /// Returns true if device found and connected
+  /// ตรวจจับและเชื่อมต่อกับเครื่องชั่ง USB อัตโนมัติ
+  /// คืนค่า true ถ้าพบอุปกรณ์และเชื่อมต่อสำเร็จ
   Future<bool> autoConnect() async {
     try {
       final bool? result = await _channel.invokeMethod<bool>('autoConnect');
-      return result ?? false;
+      _isConnectedCache = result ?? false;
+      _lastConnectionCheck = DateTime.now();
+      return _isConnectedCache;
     } on PlatformException {
-      // Auto-connect failed, device not found
+      // เชื่อมต่ออัตโนมัติล้มเหลว ไม่พบอุปกรณ์
+      _isConnectedCache = false;
+      _lastConnectionCheck = DateTime.now();
       return false;
     }
   }
 
-  /// Read weight from the connected USB scale
-  /// Device must be connected via autoConnect() first
+  /// อ่านค่าน้ำหนักจากเครื่องชั่ง USB ที่เชื่อมต่ออยู่
+  /// ต้องเชื่อมต่ออุปกรณ์ผ่าน autoConnect() ก่อน
   ///
-  /// Returns [WeightReading] with parsed weight data
-  /// Throws [PlatformException] on communication errors
+  /// คืนค่า [WeightReading] พร้อมข้อมูลน้ำหนักที่แปลงแล้ว
+  /// โยน [PlatformException] เมื่อเกิดข้อผิดพลาดในการสื่อสาร
   Future<WeightReading> readWeight() async {
     try {
+      // เรียก native method โดยตรง ไม่ต้องตรวจสอบการเชื่อมต่อก่อน
+      // เพื่อลดความดีเลย์
       final Map<String, dynamic>? response = await _channel
           .invokeMapMethod<String, dynamic>('readWeight');
 
       if (response == null) {
+        _isConnectedCache = false; // อัพเดทแคชเมื่อไม่ได้รับข้อมูล
         throw PlatformException(
           code: 'empty_response',
-          message: 'No data received from scale device',
+          message: 'ไม่ได้รับข้อมูลจากเครื่องชั่ง',
         );
       }
 
       return WeightReading.fromMap(response);
-    } on PlatformException {
+    } on PlatformException catch (e) {
+      // อัพเดทแคชเมื่อเกิดข้อผิดพลาด
+      if (e.code == 'not_connected' || e.code == 'device_disconnected') {
+        _isConnectedCache = false;
+        _lastConnectionCheck = DateTime.now();
+      }
       rethrow;
     } catch (e) {
       throw PlatformException(
         code: 'unknown_error',
-        message: 'Failed to read weight: $e',
+        message: 'อ่านค่าน้ำหนักล้มเหลว: $e',
       );
     }
   }
 
-  /// Disconnect from the USB scale device
+  /// ตัดการเชื่อมต่อจากเครื่องชั่ง USB
   Future<void> disconnect() async {
     try {
       await _channel.invokeMethod<void>('disconnect');
+      _isConnectedCache = false;
+      _lastConnectionCheck = DateTime.now();
     } on PlatformException {
-      // Disconnect failed, ignore error
+      // ตัดการเชื่อมต่อล้มเหลว ไม่ต้องทำอะไร
+      _isConnectedCache = false;
     }
   }
 
-  /// Check if USB scale device is currently connected
+  /// ตรวจสอบว่าเครื่องชั่ง USB เชื่อมต่ออยู่หรือไม่
+  /// ใช้แคชเพื่อลดการเรียก platform channel และเพิ่มความเร็ว
   Future<bool> isConnected() async {
+    // ใช้แคชถ้ายังไม่หมดอายุ
+    final now = DateTime.now();
+    if (_lastConnectionCheck != null &&
+        now.difference(_lastConnectionCheck!) < _connectionCacheDuration) {
+      return _isConnectedCache;
+    }
+
+    // ตรวจสอบจริงถ้าแคชหมดอายุ
     try {
       final bool? result = await _channel.invokeMethod<bool>('isConnected');
-      return result ?? false;
+      _isConnectedCache = result ?? false;
+      _lastConnectionCheck = now;
+      return _isConnectedCache;
     } on PlatformException {
+      _isConnectedCache = false;
+      _lastConnectionCheck = now;
       return false;
     }
+  }
+
+  /// ล้างแคชการเชื่อมต่อ (ใช้เมื่อต้องการบังคับตรวจสอบใหม่)
+  void clearConnectionCache() {
+    _lastConnectionCheck = null;
   }
 }
