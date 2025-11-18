@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/connection_status.dart';
@@ -255,15 +256,76 @@ class _ErrorView extends StatelessWidget {
   }
 }
 
-/// Weight display widget - shows real-time weight
-class _WeightDisplay extends StatelessWidget {
+/// Weight display widget - shows real-time weight with smooth animation
+class _WeightDisplay extends StatefulWidget {
   const _WeightDisplay({required this.reading});
 
   final WeightReading reading;
 
   @override
+  State<_WeightDisplay> createState() => _WeightDisplayState();
+}
+
+class _WeightDisplayState extends State<_WeightDisplay>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+  double _displayedWeight = 0.0;
+  double _targetWeight = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+
+    _animation = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+    );
+
+    _targetWeight = widget.reading.value ?? 0.0;
+    _displayedWeight = _targetWeight;
+  }
+
+  @override
+  void didUpdateWidget(_WeightDisplay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    // เมื่อค่าน้ำหนักเปลี่ยน ให้ animate ไปยังค่าใหม่
+    final newWeight = widget.reading.value ?? 0.0;
+    if (newWeight != _targetWeight) {
+      final oldWeight = _displayedWeight;
+      _targetWeight = newWeight;
+
+      // สร้าง Tween animation จากค่าปัจจุบันไปยังค่าใหม่
+      final tween = Tween<double>(begin: oldWeight, end: _targetWeight);
+
+      _animation =
+          tween.animate(
+            CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
+          )..addListener(() {
+            setState(() {
+              _displayedWeight = _animation.value;
+            });
+          });
+
+      _controller.forward(from: 0.0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final weightText = reading.displayValue;
+    // แสดงค่าน้ำหนักที่กำลัง animate พร้อมทศนิยม 3 ตำแหน่ง
+    final weightText = _displayedWeight.toStringAsFixed(3);
 
     return Container(
       constraints: const BoxConstraints(maxWidth: 520, minHeight: 320),
@@ -277,7 +339,7 @@ class _WeightDisplay extends StatelessWidget {
         borderRadius: BorderRadius.circular(32),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.5),
+            color: Colors.black.withValues(alpha: 0.5),
             blurRadius: 30,
             offset: const Offset(0, 20),
           ),
@@ -295,7 +357,7 @@ class _WeightDisplay extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
               decoration: BoxDecoration(
-                color: Colors.greenAccent.withOpacity(0.15),
+                color: Colors.greenAccent.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(24),
               ),
               child: Row(
@@ -315,20 +377,18 @@ class _WeightDisplay extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 40),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              transitionBuilder: (child, animation) =>
-                  FadeTransition(opacity: animation, child: child),
-              child: Text(
-                weightText,
-                key: ValueKey(weightText),
-                style: const TextStyle(
-                  fontSize: 100,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -3,
-                  color: Colors.white,
-                  height: 1,
-                ),
+            // แสดงตัวเลขที่ค่อยๆเปลี่ยน
+            Text(
+              weightText,
+              style: const TextStyle(
+                fontSize: 100,
+                fontWeight: FontWeight.w900,
+                letterSpacing: -3,
+                color: Colors.white,
+                height: 1,
+                fontFeatures: [
+                  FontFeature.tabularFigures(), // ทำให้ตัวเลขมีความกว้างเท่ากัน
+                ],
               ),
             ),
             const SizedBox(height: 12),
@@ -337,7 +397,7 @@ class _WeightDisplay extends StatelessWidget {
               style: TextStyle(
                 fontSize: 32,
                 fontWeight: FontWeight.w500,
-                color: Colors.white.withOpacity(0.7),
+                color: Colors.white.withValues(alpha: 0.7),
                 letterSpacing: 6,
               ),
             ),
@@ -411,9 +471,9 @@ class _ErrorMessage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.redAccent.withOpacity(0.15),
+        color: Colors.redAccent.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
+        border: Border.all(color: Colors.redAccent.withValues(alpha: 0.4)),
       ),
       child: Row(
         children: [
