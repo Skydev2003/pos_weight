@@ -302,9 +302,9 @@ class MainActivity : FlutterActivity() {
                 port.purgeHwBuffers(true, true)
             } catch (_: Exception) {
             }
-            // ลด delay จาก 100ms เหลือ 50ms เพื่อเพิ่มความเร็ว
+            // รอให้อุปกรณ์พร้อม (100ms เพื่อความเสถียร)
             try {
-                Thread.sleep(50)
+                Thread.sleep(100)
             } catch (_: InterruptedException) {
             }
 
@@ -335,23 +335,34 @@ class MainActivity : FlutterActivity() {
             var totalRead = 0
             val start = System.currentTimeMillis()
             var lastReadAt = start
+            var completeLines = 0
 
-            // ลด timeout จาก 1000ms เหลือ 600ms และลด read timeout จาก 150ms เหลือ 100ms
-            while (totalRead < buffer.size && System.currentTimeMillis() - start < 600) {
-                val count = port.read(chunk, 100)
+            // เพิ่ม timeout กลับเป็น 800ms และ read timeout เป็น 200ms เพื่อให้อ่านข้อมูลครบ
+            while (totalRead < buffer.size && System.currentTimeMillis() - start < 800) {
+                val count = port.read(chunk, 200)
                 if (count > 0) {
                     System.arraycopy(chunk, 0, buffer, totalRead, count)
                     totalRead += count
                     lastReadAt = System.currentTimeMillis()
 
-                    // ตรวจสอบว่ามี line terminator หรือไม่ เพื่อหยุดอ่านเร็วขึ้น
-                    val hasTerminator = chunk.take(count).any { byte ->
-                        byte == 0x0A.toByte() || byte == 0x0D.toByte()
+                    // นับจำนวนบรรทัดที่สมบูรณ์
+                    completeLines = buffer.take(totalRead).count { it == 0x0A.toByte() }
+                    
+                    // หยุดเมื่อได้อย่างน้อย 1 บรรทัดสมบูรณ์
+                    if (completeLines >= 1) {
+                        // รอเพิ่มอีกนิดเผื่อมีข้อมูลเพิ่ม
+                        Thread.sleep(50)
+                        // อ่านข้อมูลที่เหลือ (ถ้ามี)
+                        val extraCount = port.read(chunk, 50)
+                        if (extraCount > 0) {
+                            System.arraycopy(chunk, 0, buffer, totalRead, extraCount)
+                            totalRead += extraCount
+                        }
+                        break
                     }
-                    if (hasTerminator) break
                 } else {
-                    // ถ้าไม่มีข้อมูลใหม่มากกว่า 80ms ให้หยุดอ่าน (ลดจาก 120ms)
-                    if (totalRead > 0 && System.currentTimeMillis() - lastReadAt > 80) {
+                    // ถ้าไม่มีข้อมูลใหม่มากกว่า 150ms ให้หยุดอ่าน
+                    if (totalRead > 0 && System.currentTimeMillis() - lastReadAt > 150) {
                         break
                     }
                 }
@@ -383,11 +394,13 @@ class MainActivity : FlutterActivity() {
                 "productId" to device?.productId,
             )
 
-            val asciiLinesWithDigits = lines.filter { line ->
-                line.any { it.isDigit() }
+            // กรองเฉพาะบรรทัดที่มีตัวเลขและมีรูปแบบที่ถูกต้อง
+            val validLines = lines.filter { line ->
+                line.any { it.isDigit() } && isValidWeightLine(line)
             }
 
-            var weightKg = asciiLinesWithDigits.firstNotNullOfOrNull { line ->
+            // ลองแปลงค่าน้ำหนักจากบรรทัดที่ถูกต้อง
+            var weightKg = validLines.firstNotNullOfOrNull { line ->
                 parseWeight(line)
             }
 
@@ -466,18 +479,42 @@ class MainActivity : FlutterActivity() {
     private fun readAsciiSample(port: UsbSerialPort, dataBits: Int): String? {
         return try {
             val buffer = ByteArray(128)
-            // ลด timeout จาก 200ms เหลือ 150ms เพื่อเพิ่มความเร็วในการทดสอบ config
-            val bytes = port.read(buffer, 150)
-            if (bytes <= 0) return null
-            val raw = buffer.copyOf(bytes)
+            val chunk = ByteArray(64)
+            var totalRead = 0
+            val start = System.currentTimeMillis()
+            
+            // อ่านข้อมูลจนกว่าจะได้บรรทัดสมบูรณ์หรือ timeout (300ms)
+            while (totalRead < buffer.size && System.currentTimeMillis() - start < 300) {
+                val bytes = port.read(chunk, 200)
+                if (bytes > 0) {
+                    // คัดลอกข้อมูลที่อ่านได้ไปยัง buffer
+                    val copySize = minOf(bytes, buffer.size - totalRead)
+                    System.arraycopy(chunk, 0, buffer, totalRead, copySize)
+                    totalRead += copySize
+                    
+                    // ตรวจสอบว่ามี line terminator หรือไม่
+                    val hasNewline = chunk.take(bytes).any { 
+                        it == 0x0A.toByte() || it == 0x0D.toByte() 
+                    }
+                    if (hasNewline) break
+                } else if (totalRead > 0) {
+                    // มีข้อมูลบางส่วนแล้ว ให้หยุด
+                    break
+                }
+            }
+            
+            if (totalRead <= 0) return null
+            
+            val raw = buffer.copyOf(totalRead)
             val sanitized = sanitizeForAscii(raw, dataBits)
             // กรองเฉพาะตัวอักษรที่อ่านได้และ line terminators
-            sanitized
+            val result = sanitized
                 .filter { it in 32..126 || it == 0x0A.toByte() || it == 0x0D.toByte() }
                 .toByteArray()
                 .toString(Charsets.US_ASCII)
                 .trim()
-                .takeIf { it.isNotEmpty() }
+            
+            result.takeIf { it.isNotEmpty() }
         } catch (ex: Exception) {
             null
         }
@@ -561,22 +598,21 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ตรวจสอบว่าข้อมูลตัวอย่างน่าจะเป็นค่าน้ำหนักหรือไม่
-    private fun isLikelyWeightSample(sample: String): Boolean {
-        val trimmed = sample.trim()
+    // ตรวจสอบว่าบรรทัดข้อมูลถูกต้องหรือไม่ (ไม่มี noise/corruption)
+    private fun isValidWeightLine(line: String): Boolean {
+        val trimmed = line.trim()
         if (trimmed.length < 4) return false
 
         // ต้องมีตัวเลขอย่างน้อย 3 ตัว
         val digits = trimmed.count { it.isDigit() }
         if (digits < 3) return false
 
-        val hasDecimal = trimmed.any { it == '.' || it == ',' }
-
-        // ถ้าไม่มีจุดทศนิยม ต้องเป็นตัวเลขล้วนๆ
-        if (!hasDecimal) {
-            val looksInteger = trimmed.all { it.isDigit() || it == ' ' }
-            if (!looksInteger) return false
-        }
+        // ตรวจสอบว่ามีรูปแบบตัวเลขที่ถูกต้อง (ไม่มีตัวอักษรแทรกในตัวเลข)
+        val hasValidNumber = Regex("\\d+\\.\\d+").containsMatchIn(trimmed) || 
+                            Regex("\\d+,\\d+").containsMatchIn(trimmed) ||
+                            Regex("^\\s*\\d+\\s*$").matches(trimmed)
+        
+        if (!hasValidNumber) return false
 
         // นับตัวอักษรที่ไม่ใช่ตัวเลข/สัญลักษณ์ที่คาดหวัง
         val invalidChars = trimmed.count { ch ->
@@ -591,8 +627,13 @@ class MainActivity : FlutterActivity() {
                     ch == 'K' ||
                     ch == 'G')
         }
-        // อนุญาตให้มีตัวอักษรแปลกปลอมได้ไม่เกิน 20%
-        return invalidChars <= trimmed.length / 5
+        // อนุญาตให้มีตัวอักษรแปลกปลอมได้ไม่เกิน 10% (เข้มงวดขึ้น)
+        return invalidChars <= trimmed.length / 10
+    }
+
+    // ตรวจสอบว่าข้อมูลตัวอย่างน่าจะเป็นค่าน้ำหนักหรือไม่
+    private fun isLikelyWeightSample(sample: String): Boolean {
+        return isValidWeightLine(sample)
     }
 
     // ขออนุญาตใช้ USB device
