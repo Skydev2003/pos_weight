@@ -18,41 +18,52 @@ class WeightMonitorScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: Colors.transparent,
         title: const Text('USB Scale Monitor'),
         centerTitle: true,
+        elevation: 0,
         actions: [
           _ConnectionStatusIndicator(status: connectionStatus),
           const SizedBox(width: 16),
         ],
       ),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Main display area
-              Expanded(
-                child: Center(
-                  child: _buildMainDisplay(
-                    context,
-                    connectionStatus,
-                    weightReading,
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF160A2D), Color(0xFF1E1140), Color(0xFF08050F)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Main display area
+                Expanded(
+                  child: Center(
+                    child: _buildMainDisplay(
+                      context,
+                      connectionStatus,
+                      weightReading,
+                    ),
                   ),
                 ),
-              ),
 
-              // Error message (if any)
-              if (errorMessage != null) ...[
-                const SizedBox(height: 16),
-                _ErrorMessage(message: errorMessage),
+                // Error message (if any)
+                if (errorMessage != null) ...[
+                  const SizedBox(height: 16),
+                  _ErrorMessage(message: errorMessage),
+                ],
+
+                const SizedBox(height: 24),
+
+                // Manual control buttons
+                _ControlButtons(connectionStatus: connectionStatus),
               ],
-
-              const SizedBox(height: 24),
-
-              // Manual control buttons
-              _ControlButtons(connectionStatus: connectionStatus),
-            ],
+            ),
           ),
         ),
       ),
@@ -96,19 +107,19 @@ class _ConnectionStatusIndicator extends StatelessWidget {
 
     switch (status) {
       case ConnectionStatus.connected:
-        color = Colors.green;
+        color = Colors.greenAccent;
         icon = Icons.check_circle;
         break;
       case ConnectionStatus.connecting:
-        color = Colors.orange;
+        color = Colors.amberAccent;
         icon = Icons.sync;
         break;
       case ConnectionStatus.error:
-        color = Colors.red;
+        color = Colors.redAccent;
         icon = Icons.error;
         break;
       case ConnectionStatus.disconnected:
-        color = Colors.grey;
+        color = Colors.white54;
         icon = Icons.usb_off;
         break;
     }
@@ -138,20 +149,20 @@ class _DisconnectedView extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.usb_off, size: 120, color: Colors.grey.shade400),
+        Icon(Icons.usb_off, size: 120, color: Colors.white24),
         const SizedBox(height: 32),
         Text(
           'USB Disconnected',
           style: TextStyle(
             fontSize: 32,
             fontWeight: FontWeight.bold,
-            color: Colors.grey.shade700,
+            color: Colors.white,
           ),
         ),
         const SizedBox(height: 16),
         Text(
           'Please connect your USB scale device',
-          style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+          style: TextStyle(fontSize: 16, color: Colors.white70),
           textAlign: TextAlign.center,
         ),
       ],
@@ -177,13 +188,13 @@ class _ConnectingView extends StatelessWidget {
           style: TextStyle(
             fontSize: 28,
             fontWeight: FontWeight.w600,
-            color: Colors.grey.shade700,
+            color: Colors.white,
           ),
         ),
         const SizedBox(height: 16),
         Text(
           'Detecting USB scale device',
-          style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+          style: TextStyle(fontSize: 16, color: Colors.white70),
         ),
       ],
     );
@@ -197,20 +208,20 @@ class _WaitingForDataView extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.scale, size: 100, color: Colors.blue.shade300),
+        Icon(Icons.scale, size: 100, color: Colors.purpleAccent.shade100),
         const SizedBox(height: 32),
         Text(
           'Connected',
           style: TextStyle(
             fontSize: 32,
             fontWeight: FontWeight.bold,
-            color: Colors.green.shade700,
+            color: Colors.greenAccent,
           ),
         ),
         const SizedBox(height: 16),
         Text(
           'Waiting for weight data...',
-          style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+          style: TextStyle(fontSize: 16, color: Colors.white70),
         ),
       ],
     );
@@ -224,20 +235,20 @@ class _ErrorView extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.error_outline, size: 120, color: Colors.red.shade400),
+        Icon(Icons.error_outline, size: 120, color: Colors.redAccent),
         const SizedBox(height: 32),
         Text(
           'Connection Error',
           style: TextStyle(
             fontSize: 32,
             fontWeight: FontWeight.bold,
-            color: Colors.red.shade700,
+            color: Colors.redAccent,
           ),
         ),
         const SizedBox(height: 16),
         Text(
           'Failed to connect to USB scale',
-          style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+          style: TextStyle(fontSize: 16, color: Colors.white70),
         ),
       ],
     );
@@ -252,41 +263,50 @@ class _WeightDisplay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final rawText = reading.raw.trim();
-    final weightText = rawText.isNotEmpty
-        ? rawText
-        : (reading.value != null ? reading.value!.toString() : '--');
+    final weightText = reading.displayValue;
 
-    return Card(
-      elevation: 12,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 520, minHeight: 320),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF5C1ED2), Color(0xFF9038FF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(32),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.5),
+            blurRadius: 30,
+            offset: const Offset(0, 20),
+          ),
+        ],
+      ),
       child: Container(
-        constraints: const BoxConstraints(maxWidth: 500, minHeight: 300),
-        padding: const EdgeInsets.all(48),
+        decoration: BoxDecoration(
+          color: const Color(0xFF120A21),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 36),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // "Connected" status
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
               decoration: BoxDecoration(
-                color: Colors.green.shade50,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.green.shade200),
+                color: Colors.greenAccent.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(24),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.check_circle,
-                    color: Colors.green.shade700,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
+                children: const [
+                  Icon(Icons.check_circle, color: Colors.greenAccent, size: 20),
+                  SizedBox(width: 8),
                   Text(
                     'Connected',
                     style: TextStyle(
-                      color: Colors.green.shade700,
+                      color: Colors.greenAccent,
                       fontWeight: FontWeight.w600,
                       fontSize: 16,
                     ),
@@ -294,99 +314,36 @@ class _WeightDisplay extends StatelessWidget {
                 ],
               ),
             ),
-
-            const SizedBox(height: 32),
-
-            // Weight value
-            Text(
-              weightText,
-              style: TextStyle(
-                fontSize: 96,
-                fontWeight: FontWeight.bold,
-                letterSpacing: -2,
-                color: Colors.blue.shade700,
-                height: 1,
+            const SizedBox(height: 40),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              transitionBuilder: (child, animation) =>
+                  FadeTransition(opacity: animation, child: child),
+              child: Text(
+                weightText,
+                key: ValueKey(weightText),
+                style: const TextStyle(
+                  fontSize: 100,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -3,
+                  color: Colors.white,
+                  height: 1,
+                ),
               ),
             ),
-
-            const SizedBox(height: 8),
-
-            // Unit
+            const SizedBox(height: 12),
             Text(
               'kg',
               style: TextStyle(
                 fontSize: 32,
                 fontWeight: FontWeight.w500,
-                color: Colors.grey.shade600,
-              ),
-            ),
-
-            const SizedBox(height: 32),
-
-            // Metadata
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                children: [
-                  _MetadataRow(
-                    icon: Icons.data_object,
-                    label: 'Raw',
-                    value: reading.raw,
-                  ),
-                  const SizedBox(height: 8),
-                  _MetadataRow(
-                    icon: Icons.access_time,
-                    label: 'Time',
-                    value: reading.timestampFormatted,
-                  ),
-                ],
+                color: Colors.white.withOpacity(0.7),
+                letterSpacing: 6,
               ),
             ),
           ],
         ),
       ),
-    );
-  }
-}
-
-/// Metadata row widget
-class _MetadataRow extends StatelessWidget {
-  const _MetadataRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: Colors.grey.shade600),
-        const SizedBox(width: 8),
-        Text(
-          '$label: ',
-          style: TextStyle(
-            color: Colors.grey.shade600,
-            fontWeight: FontWeight.w500,
-            fontSize: 14,
-          ),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(color: Colors.black87, fontSize: 14),
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ],
     );
   }
 }
@@ -412,8 +369,11 @@ class _ControlButtons extends ConsumerWidget {
             label: const Text('Retry Connection'),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-              backgroundColor: Colors.blue,
+              backgroundColor: const Color(0xFF7C3AED),
               foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
             ),
           ),
 
@@ -427,6 +387,11 @@ class _ControlButtons extends ConsumerWidget {
             label: const Text('Disconnect'),
             style: OutlinedButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              side: const BorderSide(color: Color(0xFFB388FF)),
+              foregroundColor: const Color(0xFFB388FF),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
             ),
           ),
         ],
@@ -446,19 +411,19 @@ class _ErrorMessage extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.red.shade50,
+        color: Colors.redAccent.withOpacity(0.15),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.red.shade200),
+        border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline, color: Colors.red.shade700),
+          const Icon(Icons.error_outline, color: Colors.redAccent),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               message,
               style: TextStyle(
-                color: Colors.red.shade700,
+                color: Colors.redAccent.shade100,
                 fontWeight: FontWeight.w500,
               ),
             ),

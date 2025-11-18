@@ -16,6 +16,7 @@ import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.embedding.android.FlutterActivity
@@ -27,10 +28,12 @@ import kotlin.text.Charsets
 
 class MainActivity : FlutterActivity() {
     private val channelName = "pos_weight/serial"
+    private val usbEventsChannelName = "pos_weight/usb_events"
     private val usbPermissionAction: String by lazy { "$packageName.USB_PERMISSION" }
     private val logTag = "SerialScale"
 
     private var methodChannel: MethodChannel? = null
+    private var usbEventSink: EventChannel.EventSink? = null
     private var receiverRegistered = false
 
     private var usbManager: UsbManager? = null
@@ -49,53 +52,109 @@ class MainActivity : FlutterActivity() {
         SerialConfig("9600 8N1", 9600, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE),
     )
 
-    private val usbPermissionReceiver = object : BroadcastReceiver() {
+    private var lastKnownGoodConfig: SerialConfig? = null
+
+    private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != usbPermissionAction) return
-            val device: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+            if (intent == null) return
+            when (intent.action) {
+                usbPermissionAction -> handleUsbPermission(intent)
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> handleUsbAttached(intent)
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> handleUsbDetached(intent)
             }
-            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-            val message = if (granted) {
-                "อนุญาตการเข้าถึง ${device?.deviceName ?: "USB"} แล้ว"
-            } else {
-                "ปฏิเสธการเข้าถึง USB"
-            }
-            Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-        registerUsbPermissionReceiver()
+        registerUsbReceivers()
     }
 
     override fun onDestroy() {
         if (receiverRegistered) {
             try {
-                unregisterReceiver(usbPermissionReceiver)
+                unregisterReceiver(usbReceiver)
             } catch (ex: IllegalArgumentException) {
                 Log.w(logTag, "Receiver already unregistered", ex)
             }
             receiverRegistered = false
         }
         closeSerialPort()
+        usbEventSink = null
         super.onDestroy()
     }
 
-    private fun registerUsbPermissionReceiver() {
-        val filter = IntentFilter(usbPermissionAction)
+    private fun registerUsbReceivers() {
+        if (receiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(usbPermissionAction)
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(usbPermissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
-            registerReceiver(usbPermissionReceiver, filter)
+            registerReceiver(usbReceiver, filter)
         }
         receiverRegistered = true
+    }
+
+    private fun handleUsbPermission(intent: Intent) {
+        val device = extractUsbDevice(intent)
+        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+        val message = if (granted) {
+            "อนุญาตการเข้าถึง ${device?.deviceName ?: "USB"} แล้ว"
+        } else {
+            "ปฏิเสธการเข้าถึง USB"
+        }
+        runOnUiThread {
+            Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+        }
+        if (granted) {
+            emitUsbEvent("connected")
+        }
+    }
+
+    private fun handleUsbAttached(intent: Intent) {
+        val device = extractUsbDevice(intent)
+        Log.d(logTag, "USB device attached: ${device?.deviceName}")
+        emitUsbEvent("connected")
+    }
+
+    private fun handleUsbDetached(intent: Intent) {
+        val device = extractUsbDevice(intent)
+        Log.d(logTag, "USB device detached: ${device?.deviceName}")
+        closeSerialPort()
+        emitUsbEvent("disconnected")
+    }
+
+    private fun emitUsbEvent(event: String) {
+        val sink = usbEventSink ?: return
+        runOnUiThread {
+            sink.success(event)
+        }
+    }
+
+    private fun emitCurrentUsbState() {
+        val manager = usbManager ?: return
+        val drivers = runCatching {
+            UsbSerialProber.getDefaultProber().findAllDrivers(manager)
+        }.getOrDefault(emptyList())
+        when {
+            drivers.isNotEmpty() -> emitUsbEvent("connected")
+            manager.deviceList.isEmpty() -> emitUsbEvent("disconnected")
+        }
+    }
+
+    private fun extractUsbDevice(intent: Intent): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -112,6 +171,17 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, usbEventsChannelName)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    usbEventSink = events
+                    emitCurrentUsbState()
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    usbEventSink = null
+                }
+            })
     }
 
     private fun handleAutoConnect(result: MethodChannel.Result) {
@@ -201,6 +271,14 @@ class MainActivity : FlutterActivity() {
             }
 
             port.open(connection)
+            try {
+                port.purgeHwBuffers(true, true)
+            } catch (_: Exception) {
+            }
+            try {
+                Thread.sleep(100)
+            } catch (_: InterruptedException) {
+            }
 
             if (!configureSerialParameters(port)) {
                 Log.e(logTag, "Unable to determine serial configuration")
@@ -251,20 +329,22 @@ class MainActivity : FlutterActivity() {
                 return SerialReadOutcome.Failure("no_data", "ไม่ได้รับข้อมูลจากเครื่องชั่ง")
             }
 
-            val data = buffer.copyOfRange(0, totalRead)
-            val lines = data.toString(Charsets.US_ASCII)
+            val rawData = buffer.copyOfRange(0, totalRead)
+            val sanitizedData = sanitizeForAscii(rawData, activeSerialConfig?.dataBits)
+            val asciiPayload = sanitizedData.toString(Charsets.US_ASCII)
+            val lines = asciiPayload
                 .split("\r", "\n")
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
             val firstLine = lines.firstOrNull() ?: ""
-            val hexDump = data.joinToString(" ") { "%02X".format(it) }
+            val hexDump = rawData.joinToString(" ") { "%02X".format(it) }
 
             Log.d(logTag, "Raw serial payload ($totalRead bytes): $lines | HEX: $hexDump")
 
             val device = serialDriver?.device
             val payload = hashMapOf<String, Any?>(
                 "port" to buildPortLabel(device),
-                "raw" to firstLine.ifEmpty { hexDump },
+                "raw" to firstLine.ifEmpty { asciiPayload.trim().ifEmpty { hexDump } },
                 "rawHex" to hexDump,
                 "devicePath" to device?.deviceName,
                 "vendorId" to device?.vendorId,
@@ -280,7 +360,7 @@ class MainActivity : FlutterActivity() {
             }
 
             if (weightKg == null && totalRead <= 4) {
-                val binaryWeight = parseBinaryWeight(data)
+                val binaryWeight = parseBinaryWeight(rawData)
                 weightKg = binaryWeight?.valueKg
                 binaryWeight?.rawCounts?.let { payload["rawCounts"] = it }
             }
@@ -296,12 +376,20 @@ class MainActivity : FlutterActivity() {
             )
         } catch (ex: Exception) {
             Log.e(logTag, "Failed to read serial data", ex)
-            SerialReadOutcome.Failure("read_error", ex.localizedMessage ?: "เกิดข้อผิดพลาด")
+            closeSerialPort()
+            SerialReadOutcome.Failure("device_disconnected", ex.localizedMessage ?: "เกิดข้อผิดพลาด")
         }
     }
 
     private fun configureSerialParameters(port: UsbSerialPort): Boolean {
-        serialConfigs.forEach { config ->
+        val attempted = mutableSetOf<SerialConfig>()
+        val sequence = buildList {
+            lastKnownGoodConfig?.let { add(it) }
+            addAll(serialConfigs)
+        }
+
+        sequence.forEach { config ->
+            if (!attempted.add(config)) return@forEach
             try {
                 port.setParameters(
                     config.baudRate,
@@ -312,9 +400,10 @@ class MainActivity : FlutterActivity() {
                 port.dtr = true
                 port.rts = true
 
-                val sample = readAsciiSample(port)
-                if (sample != null && sample.any { it.isDigit() }) {
+                val sample = readAsciiSample(port, config.dataBits)
+                if (sample != null && isLikelyWeightSample(sample)) {
                     activeSerialConfig = config
+                    lastKnownGoodConfig = config
                     Log.d(logTag, "Using serial config ${config.label}, sample='$sample'")
                     return true
                 }
@@ -326,12 +415,25 @@ class MainActivity : FlutterActivity() {
         return false
     }
 
-    private fun readAsciiSample(port: UsbSerialPort): String? {
+    private fun sanitizeForAscii(data: ByteArray, dataBits: Int?): ByteArray {
+        if (dataBits != UsbSerialPort.DATABITS_7) {
+            return data
+        }
+        val sanitized = ByteArray(data.size)
+        data.forEachIndexed { index, byte ->
+            sanitized[index] = (byte.toInt() and 0x7F).toByte()
+        }
+        return sanitized
+    }
+
+    private fun readAsciiSample(port: UsbSerialPort, dataBits: Int): String? {
         return try {
             val buffer = ByteArray(128)
             val bytes = port.read(buffer, 200)
             if (bytes <= 0) return null
-            buffer.copyOf(bytes)
+            val raw = buffer.copyOf(bytes)
+            val sanitized = sanitizeForAscii(raw, dataBits)
+            sanitized
                 .filter { it in 32..126 || it == 0x0A.toByte() || it == 0x0D.toByte() }
                 .toByteArray()
                 .toString(Charsets.US_ASCII)
@@ -407,7 +509,37 @@ class MainActivity : FlutterActivity() {
             serialConnection = null
             serialPort = null
             serialDriver = null
+            activeSerialConfig = null
         }
+    }
+
+    private fun isLikelyWeightSample(sample: String): Boolean {
+        val trimmed = sample.trim()
+        if (trimmed.length < 4) return false
+
+        val digits = trimmed.count { it.isDigit() }
+        if (digits < 3) return false
+
+        val hasDecimal = trimmed.any { it == '.' || it == ',' }
+
+        if (!hasDecimal) {
+            val looksInteger = trimmed.all { it.isDigit() || it == ' ' }
+            if (!looksInteger) return false
+        }
+
+        val invalidChars = trimmed.count { ch ->
+            !(ch.isDigit() ||
+                    ch == '.' ||
+                    ch == ',' ||
+                    ch == '-' ||
+                    ch == '+' ||
+                    ch == ' ' ||
+                    ch == 'k' ||
+                    ch == 'g' ||
+                    ch == 'K' ||
+                    ch == 'G')
+        }
+        return invalidChars <= trimmed.length / 5
     }
 
     private fun requestUsbPermission(usbManager: UsbManager, device: UsbDevice) {
