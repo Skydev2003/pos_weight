@@ -1,4 +1,4 @@
-/// Model representing a weight reading from the USB scale
+/// นี่คือ โมเดลสำหรับการอ่านน้ำหนัก
 class WeightReading {
   const WeightReading({
     required this.port,
@@ -6,7 +6,7 @@ class WeightReading {
     required this.timestamp,
     this.value,
   });
-
+  //นี่คือ regex สำหรับดึงตัวเลขจากสตริง
   static final RegExp _numericPattern = RegExp(r'-?\d+(?:[.,]\d+)?');
 
   factory WeightReading.fromMap(Map<String, dynamic> map) {
@@ -31,7 +31,7 @@ class WeightReading {
   final DateTime timestamp;
   final double? value;
 
-  /// Display-friendly numeric text with 3 decimal places when possible.
+  /// นี่คือ ค่าที่แสดงเป็นสตริง โดยมีทศนิยม 3 ตำแหน่ง หรือ '--' ถ้าไม่มีค่า
   String get displayValue {
     final double? resolvedValue = normalizedValue;
     if (resolvedValue != null) {
@@ -40,7 +40,7 @@ class WeightReading {
     return '--';
   }
 
-  /// Normalized numeric value with small jitters snapped to zero.
+  /// ค่าที่ถูกปรับให้เป็นปกติ โดยล็อกค่าใกล้ศูนย์ให้เป็น 0
   double? get normalizedValue {
     final resolvedValue = value ?? _parseRawValue();
     if (resolvedValue == null) return null;
@@ -51,7 +51,7 @@ class WeightReading {
     return resolvedValue;
   }
 
-  /// Raw reading stripped of special characters for debugging display.
+  /// ค่าดิบที่ถูกทำความสะอาดเพื่อให้เหลือเฉพาะตัวเลข, จุดทศนิยม, เครื่องหมายบวกและลบ
   String get sanitizedRaw {
     final match = _numericPattern.firstMatch(raw);
     if (match != null) {

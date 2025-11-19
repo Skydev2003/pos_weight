@@ -5,26 +5,26 @@ import '../models/connection_status.dart';
 import '../models/weight_reading.dart';
 import '../services/serial_scale_service.dart';
 
-/// Provider for the serial scale service instance
+/// นี่คือ provider สำหรับ SerialScaleService
 final serialScaleServiceProvider = Provider<SerialScaleService>((ref) {
   return SerialScaleService();
 });
 
-/// Provider for connection status
+/// นี่คือ provider สำหรับสถานะการเชื่อมต่อ
 final connectionStatusProvider = StateProvider<ConnectionStatus>((ref) {
   return ConnectionStatus.disconnected;
 });
 
-/// Provider for the latest weight reading
+/// นี่คือ provider สำหรับการอ่านน้ำหนักล่าสุด
 final weightReadingProvider = StateProvider<WeightReading?>((ref) => null);
 
-/// Provider for error messages
+/// นี่คือ provider สำหรับข้อความแสดงข้อผิดพลาด
 final errorMessageProvider = StateProvider<String?>((ref) => null);
 
-/// Provider for auto-start preference
+/// นี่คือ provider สำหรับการตั้งค่าเริ่มต้นอัตโนมัติ
 final autoStartProvider = StateProvider<bool>((ref) => true);
 
-/// Controller for managing scale operations with automatic USB detection
+/// Controller สำหรับการจัดการการเชื่อมต่อและการอ่านน้ำหนัก
 class ScaleController extends StateNotifier<AsyncValue<void>> {
   ScaleController(this.ref) : super(const AsyncValue.data(null)) {
     Future.microtask(_initialize); // Defer initialization to avoid synchronous provider writes
@@ -47,11 +47,11 @@ class ScaleController extends StateNotifier<AsyncValue<void>> {
   int _pendingConfirmations = 0;
   int _pendingRequiredConfirmations = 0;
 
-  /// Initialize USB event monitoring
+  /// นี่คือ การเริ่มต้น controller
   void _initialize() {
     final service = ref.read(serialScaleServiceProvider);
 
-    // Listen to USB connection events
+    // นี่ คือ การสมัครรับเหตุการณ์ USB
     _usbEventSubscription = service.usbEvents.listen(
       (event) {
         if (_isDisposed) return;
@@ -63,20 +63,20 @@ class ScaleController extends StateNotifier<AsyncValue<void>> {
         }
       },
       onError: (error) {
-        // USB event stream error, ignore
+        // นี่ คือ การจัดการข้อผิดพลาดของเหตุการณ์ USB
       },
     );
 
-    // Try to connect if device is already plugged in
+    // ลองเชื่อมต่ออัตโนมัติเมื่อเริ่มต้น
     _tryAutoConnect();
   }
 
-  /// Handle USB device connected event
+  /// นี่คือ การจัดการเหตุการณ์ USB เชื่อมต่อ
   void _handleUsbConnected() async {
     ref.read(connectionStatusProvider.notifier).state =
         ConnectionStatus.connecting;
 
-    // Small delay to ensure device is ready
+    // รอเล็กน้อยก่อนพยายามเชื่อมต่อ
     await Future.delayed(const Duration(milliseconds: 500));
 
     if (_isDisposed) return;

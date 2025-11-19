@@ -28,9 +28,3 @@ flutter_launcher_icons:
   ios: true
   image_path: "assets/images/POS.png"
   min_sdk_android: 21
-  web:
-    generate: true
-    image_path: "assets/images/POS.png"
-  windows:
-    generate: true
-    image_path: "assets/images/POS.png"
