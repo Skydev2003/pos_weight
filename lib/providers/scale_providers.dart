@@ -162,7 +162,7 @@ class ScaleController extends StateNotifier<AsyncValue<void>> {
 
     // Start periodic polling (faster cadence keeps UI responsive)
     _pollingTimer = Timer.periodic(
-      const Duration(milliseconds: 250),
+      const Duration(milliseconds: 150),
       (_) => _readWeight(),
     );
   }
@@ -286,13 +286,13 @@ class ScaleController extends StateNotifier<AsyncValue<void>> {
 
     final int confirmationsRequired;
     if (difference <= _tinyStepThreshold) {
-      confirmationsRequired = 5;
-    } else if (difference <= _smallStepThreshold) {
-      confirmationsRequired = 4;
-    } else if (difference <= _mediumStepThreshold) {
-      confirmationsRequired = 3;
-    } else {
       confirmationsRequired = 2;
+    } else if (difference <= _smallStepThreshold) {
+      confirmationsRequired = 2;
+    } else if (difference <= _mediumStepThreshold) {
+      confirmationsRequired = 1;
+    } else {
+      confirmationsRequired = 1;
     }
 
     _accumulatePendingReading(

@@ -22,7 +22,6 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.embedding.android.FlutterActivity
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.Locale
 import kotlin.math.abs
 import kotlin.text.Charsets
 
@@ -31,6 +30,7 @@ class MainActivity : FlutterActivity() {
     private val usbEventsChannelName = "pos_weight/usb_events"
     private val usbPermissionAction: String by lazy { "$packageName.USB_PERMISSION" }
     private val logTag = "SerialScale"
+    private val decimalWeightRegex = Regex("""\s*\d+\.\d+""")
 
     private var methodChannel: MethodChannel? = null
     private var usbEventSink: EventChannel.EventSink? = null
@@ -40,9 +40,6 @@ class MainActivity : FlutterActivity() {
     private var serialDriver: UsbSerialDriver? = null
     private var serialPort: UsbSerialPort? = null
     private var serialConnection: UsbDeviceConnection? = null
-
-    // Regex สำหรับหาตัวเลขในข้อความ (รองรับทศนิยม)
-    private val weightRegex = Regex("[-+]?\\d+(?:[.,]\\d+)?")
 
     // รายการ serial configurations ที่รองรับ (เรียงตามความนิยม)
     private val serialConfigs = listOf(
@@ -336,6 +333,8 @@ class MainActivity : FlutterActivity() {
             val start = System.currentTimeMillis()
             var lastReadAt = start
             var completeLines = 0
+            val asciiCollector = StringBuilder()
+            var earlyWeightEntry: Pair<String, Double>? = null
 
             // เพิ่ม timeout กลับเป็น 800ms และ read timeout เป็น 200ms เพื่อให้อ่านข้อมูลครบ
             while (totalRead < buffer.size && System.currentTimeMillis() - start < 800) {
@@ -347,7 +346,25 @@ class MainActivity : FlutterActivity() {
 
                     // นับจำนวนบรรทัดที่สมบูรณ์
                     completeLines = buffer.take(totalRead).count { it == 0x0A.toByte() }
-                    
+
+                    // ต่อข้อมูล ASCII เพื่อหาบรรทัดที่ถูกต้องให้เร็วที่สุด
+                    val latestSlice = buffer.copyOfRange(totalRead - count, totalRead)
+                    val asciiChunk = sanitizeForAscii(latestSlice, activeSerialConfig?.dataBits)
+                        .toString(Charsets.US_ASCII)
+                    if (asciiChunk.isNotEmpty()) {
+                        asciiCollector.append(asciiChunk)
+                        if (earlyWeightEntry == null &&
+                            (asciiChunk.contains('\n') || asciiChunk.contains('\r'))
+                        ) {
+                            val candidate =
+                                findWeightInLines(cleanAsciiLines(asciiCollector.toString()))
+                            if (candidate != null) {
+                                earlyWeightEntry = candidate
+                                break
+                            }
+                        }
+                    }
+
                     // หยุดเมื่อได้อย่างน้อย 1 บรรทัดสมบูรณ์
                     if (completeLines >= 1) {
                         // รอเพิ่มอีกนิดเผื่อมีข้อมูลเพิ่ม
@@ -375,10 +392,7 @@ class MainActivity : FlutterActivity() {
             val rawData = buffer.copyOfRange(0, totalRead)
             val sanitizedData = sanitizeForAscii(rawData, activeSerialConfig?.dataBits)
             val asciiPayload = sanitizedData.toString(Charsets.US_ASCII)
-            val lines = asciiPayload
-                .split("\r", "\n")
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
+            val lines = cleanAsciiLines(asciiPayload)
             val firstLine = lines.firstOrNull() ?: ""
             val hexDump = rawData.joinToString(" ") { "%02X".format(it) }
 
@@ -394,14 +408,11 @@ class MainActivity : FlutterActivity() {
                 "productId" to device?.productId,
             )
 
-            // กรองเฉพาะบรรทัดที่มีตัวเลขและมีรูปแบบที่ถูกต้อง
-            val validLines = lines.filter { line ->
-                line.any { it.isDigit() } && isValidWeightLine(line)
-            }
-
-            // ลองแปลงค่าน้ำหนักจากบรรทัดที่ถูกต้อง
-            var weightKg = validLines.firstNotNullOfOrNull { line ->
-                parseWeight(line)
+            // เลือกเฉพาะบรรทัดที่มีรูปแบบน้ำหนักที่ถูกต้อง (ค่าวนรอบแรกจะได้เลย)
+            val weightEntry = earlyWeightEntry ?: findWeightInLines(lines)
+            var weightKg = weightEntry?.second
+            if (weightEntry != null) {
+                payload["raw"] = weightEntry.first
             }
 
             if (weightKg == null && totalRead <= 4) {
@@ -520,15 +531,31 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // แปลงข้อความเป็นค่าน้ำหนัก (กิโลกรัม)
-    private fun parseWeight(raw: String): Double? {
-        val normalized = raw.lowercase(Locale.ROOT)
-        val match = weightRegex.find(normalized) ?: return null
-        val numeric = match.value.replace(",", ".").toDoubleOrNull() ?: return null
+    // ดึงค่าน้ำหนักทศนิยมจากบรรทัดข้อความ
+    private fun extractWeight(line: String): Double? {
+        val asciiOnly = cleanPrintableAscii(line)
+        val match = decimalWeightRegex.find(asciiOnly) ?: return null
+        return match.value.trim().toDoubleOrNull()
+    }
 
-        // ตรวจสอบว่าเป็นหน่วยกรัมหรือกิโลกรัม
-        val isGram = normalized.contains(" g") && !normalized.contains("kg")
-        return if (isGram) numeric / 1000.0 else numeric
+    private fun cleanPrintableAscii(input: String): String {
+        return input.filter { it.code in 32..126 }
+    }
+
+    private fun cleanAsciiLines(payload: String): List<String> {
+        return payload
+            .replace("\r", "\n")
+            .split('\n')
+            .map { cleanPrintableAscii(it) }
+            .filter { it.isNotEmpty() }
+    }
+
+    private fun findWeightInLines(lines: List<String>): Pair<String, Double>? {
+        return lines.asSequence()
+            .mapNotNull { line ->
+                extractWeight(line)?.let { weight -> line to weight }
+            }
+            .firstOrNull()
     }
 
     // แปลงข้อมูลแบบ binary เป็นค่าน้ำหนัก (สำหรับเครื่องชั่งบางรุ่น)
@@ -600,35 +627,7 @@ class MainActivity : FlutterActivity() {
 
     // ตรวจสอบว่าบรรทัดข้อมูลถูกต้องหรือไม่ (ไม่มี noise/corruption)
     private fun isValidWeightLine(line: String): Boolean {
-        val trimmed = line.trim()
-        if (trimmed.length < 4) return false
-
-        // ต้องมีตัวเลขอย่างน้อย 3 ตัว
-        val digits = trimmed.count { it.isDigit() }
-        if (digits < 3) return false
-
-        // ตรวจสอบว่ามีรูปแบบตัวเลขที่ถูกต้อง (ไม่มีตัวอักษรแทรกในตัวเลข)
-        val hasValidNumber = Regex("\\d+\\.\\d+").containsMatchIn(trimmed) || 
-                            Regex("\\d+,\\d+").containsMatchIn(trimmed) ||
-                            Regex("^\\s*\\d+\\s*$").matches(trimmed)
-        
-        if (!hasValidNumber) return false
-
-        // นับตัวอักษรที่ไม่ใช่ตัวเลข/สัญลักษณ์ที่คาดหวัง
-        val invalidChars = trimmed.count { ch ->
-            !(ch.isDigit() ||
-                    ch == '.' ||
-                    ch == ',' ||
-                    ch == '-' ||
-                    ch == '+' ||
-                    ch == ' ' ||
-                    ch == 'k' ||
-                    ch == 'g' ||
-                    ch == 'K' ||
-                    ch == 'G')
-        }
-        // อนุญาตให้มีตัวอักษรแปลกปลอมได้ไม่เกิน 10% (เข้มงวดขึ้น)
-        return invalidChars <= trimmed.length / 10
+        return extractWeight(line) != null
     }
 
     // ตรวจสอบว่าข้อมูลตัวอย่างน่าจะเป็นค่าน้ำหนักหรือไม่
